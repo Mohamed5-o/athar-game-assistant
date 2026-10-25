@@ -23,7 +23,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         }
         val title = TextView(this).apply {
-            text = "Athar Game Assistant\n\n1) اسمح بالظهور فوق التطبيقات.\n2) فعّل خدمة إمكانية الوصول.\n3) افتح اللعبة ثم اضغط «مراجعة البيانات» في المربع العائم."
+            text = "Athar Game Assistant\n\n1) اسمح بالظهور فوق التطبيقات.\n2) فعّل خدمة إمكانية الوصول (Athar Game Assistant).\n3) اضغط «تشغيل المربع العائم» ثم افتح اللعبة.\n\nالمربع يطابق الاسم والعنوان وتاريخ الميلاد والعمر والوظيفة والجنس تلقائياً كل ما تتغير الملفات، وزر «فحص» يعيد الفحص يدوياً."
             textSize = 18f
         }
         val overlay = Button(this).apply {

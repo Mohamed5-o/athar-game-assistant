@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">Athar Game Assistant</string>
-    <string name="accessibility_description">يسمح للتطبيق بالتقاط لقطة شاشة عند الضغط على مراجعة البيانات فقط.</string>
+    <string name="accessibility_description">يقرأ النصوص الظاهرة على شاشة اللعبة لمطابقة بيانات ملفات الموظف (البطاقة وملف الشركة وإثبات السكن) وعرض النتيجة في المربع العائم. لا يضغط على أي شيء ولا يرسل أي بيانات خارج الجهاز.</string>
 </resources>
