@@ -11,8 +11,8 @@ android {
         applicationId = "com.athar.gameassistant"
         minSdk = 30
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.3.0"
     }
 
     buildTypes {
@@ -35,4 +35,6 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("com.google.android.gms:play-services-tasks:18.2.0")
 }

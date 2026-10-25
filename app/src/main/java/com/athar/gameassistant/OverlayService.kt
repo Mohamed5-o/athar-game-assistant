@@ -57,7 +57,7 @@ class OverlayService : Service() {
             setTextColor(Color.LTGRAY)
         }
         val bannerView = TextView(this).apply {
-            text = "افتح ملف موظف أو اضغط فحص"
+            text = "افتح شاشة الفحص في اللعبة أو اضغط فحص"
             textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
@@ -141,6 +141,10 @@ class OverlayService : Service() {
                     touchY = ev.rawY
                     true
                 }
+                MotionEvent.ACTION_UP -> {
+                    p.post { publishRect(p) }
+                    true
+                }
                 MotionEvent.ACTION_MOVE -> {
                     lp.x = startX + (ev.rawX - touchX).toInt()
                     lp.y = startY + (ev.rawY - touchY).toInt()
@@ -163,6 +167,8 @@ class OverlayService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        p.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> publishRect(p) }
+        p.post { publishRect(p) }
         wm = windowManager
         panel = p
         banner = bannerView
@@ -176,6 +182,12 @@ class OverlayService : Service() {
             showMessage("⚠️ فعّل خدمة إمكانية الوصول من التطبيق ثم اضغط فحص.")
         }
         return START_STICKY
+    }
+
+    private fun publishRect(v: View) {
+        val loc = IntArray(2)
+        v.getLocationOnScreen(loc)
+        ScreenReaderService.overlayRect = intArrayOf(loc[0], loc[1], loc[0] + v.width, loc[1] + v.height)
     }
 
     private fun showMessage(msg: String) {
@@ -228,6 +240,7 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         ScreenReaderService.overlayActive = false
+        ScreenReaderService.overlayRect = null
         ScreenReaderService.reportListener = null
         panel?.let { try { wm?.removeView(it) } catch (_: Exception) {} }
         panel = null

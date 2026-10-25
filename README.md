@@ -3,33 +3,26 @@
 Android overlay that checks the three employee documents in the BinWorld Bank Haroun browser game
 (national ID card, company file, proof of residence) and shows ✅ / ❌ for each rule.
 
-## Checks
-- **Name** – identical in the 3 documents. Letters are compared exactly, so a difference in a single dot is reported (the differing letter is shown in `[ ]`).
-- **Address** – compared across every document that shows an address (if only one document has it, it is shown as "➖ not comparable").
-- **Date of birth** – card vs company file.
-- **Age** – age printed on the card must be between 18 and 65.
-- **Job** – card vs company file (internal codes such as `(J02)` are ignored).
-- **Gender** – card vs company file.
+## Why screenshots
+The game is drawn on a canvas, so the browser exposes **no text** to Android (verified with the in-app diagnostic).
+The app therefore works on a screenshot taken every ~1.5 s while the floating box is visible:
 
-The check re-runs automatically whenever the game screen changes (after Accept / Reject the next employee loads), and the **فحص** button re-runs it on demand.
-Nothing is ever clicked automatically.
+* the three documents are found by the exact colour of their header bars, and their text rows by dark ink;
+* **name** (3 documents), **job** and **gender** are the same text drawn with the same font, so the two renderings are compared pixel-by-pixel after sub-pixel alignment: one extra or missing dot is reported (no OCR involved);
+* **birth date** and **age** are digits, read with ML Kit text recognition (on-device); the date is compared between the card and the company file, and the age on the card must be 18–65;
+* **address** is shown only in the proof of residence, so it cannot be compared (shown as ➖).
 
-## How it reads the screen
-It uses the Accessibility Service to read the **text** of the page from the browser (no OCR), so the characters are exact.
-If the game draws its text inside an image/canvas the system cannot read it; in that case the overlay says so.
-Press **تشخيص** in the overlay: it copies everything the service can read to the clipboard so the parser can be adjusted to the real screen.
+The check re-runs by itself when the documents change; the **فحص** button re-runs it on demand.
+Keep the floating box away from the documents (drag it by its title): if it covers one, that check shows ❓.
+The **تشخيص** button copies the detected layout/scores to the clipboard and saves the screenshot to Pictures/Athar.
+
+Nothing is ever clicked automatically. The app has no internet permission and stores nothing.
 
 ## Build with GitHub
 1. Upload the contents of this folder (not the ZIP) to a GitHub repository.
 2. Go to **Actions** → **Android Debug APK** → *Run workflow* (or push to `main`).
 3. Download the `athar-game-assistant-debug-apk` artifact and install the APK.
-4. Open the app, allow *display over other apps*, enable the Accessibility Service, then tap *تشغيل المربع العائم*.
+4. Open the app, allow *display over other apps*, enable the Accessibility Service (allow restricted settings first if Android asks), then tap *تشغيل المربع العائم*.
 
 ## Local build
-Requires JDK 17, the Android SDK and Gradle 8.9 (the Android Gradle Plugin 8.7.x needs Gradle 8.9+):
-`gradle assembleDebug`
-
-The Gradle wrapper is not included. To add it once: `gradle wrapper --gradle-version 8.9`, then use `./gradlew assembleDebug`.
-
-## Privacy
-The app has no internet permission. The accessibility service only works while the floating box is shown, and the text it reads is never stored or sent anywhere.
+Requires JDK 17, the Android SDK and Gradle 8.9: `gradle assembleDebug`.
