@@ -2,64 +2,90 @@ package com.athar.gameassistant
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityService.ScreenshotResult
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Toast
+import androidx.core.content.ContextCompat
 
 class ScreenReaderService : AccessibilityService() {
-    companion object { const val ACTION_REVIEW = "com.athar.gameassistant.REVIEW" }
-    private val main = Handler(Looper.getMainLooper())
+    companion object {
+        const val ACTION_REVIEW = "com.athar.gameassistant.REVIEW"
+        const val ACTION_RESULT = "com.athar.gameassistant.RESULT"
+        const val EXTRA_MESSAGE = "message"
+
+        /** True while the accessibility service is connected (same process as the overlay). */
+        @Volatile
+        var isRunning = false
+            private set
+    }
+
+    private var receiverRegistered = false
     private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) { takeScreenshotForReview() }
+        override fun onReceive(context: Context?, intent: Intent?) {
+            takeScreenshotForReview()
+        }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        val filter = IntentFilter(ACTION_REVIEW)
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
-        else @Suppress("DEPRECATION") registerReceiver(receiver, filter)
+        isRunning = true
+        if (!receiverRegistered) {
+            ContextCompat.registerReceiver(
+                this, receiver, IntentFilter(ACTION_REVIEW), ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            receiverRegistered = true
+        }
     }
 
     private fun takeScreenshotForReview() {
-        if (Build.VERSION.SDK_INT < 30) {
-            Toast.makeText(this, "يلزم Android 11 أو أحدث", Toast.LENGTH_LONG).show()
-            return
-        }
-        takeScreenshot(Display.DEFAULT_DISPLAY, main, object : TakeScreenshotCallback {
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
             override fun onSuccess(screenshot: ScreenshotResult) {
-                val hardware = screenshot.hardwareBuffer
-                val bitmap = Bitmap.wrapHardwareBuffer(hardware, screenshot.colorSpace)
-                hardware.close()
-                if (bitmap == null) {
-                    broadcastResult("تعذّر التقاط الشاشة")
-                    return
+                val buffer = screenshot.hardwareBuffer
+                try {
+                    val bitmap = Bitmap.wrapHardwareBuffer(buffer, screenshot.colorSpace)
+                    if (bitmap == null) {
+                        broadcastResult("تعذّر التقاط الشاشة")
+                    } else {
+                        // OCR parsing intentionally fails closed until Arabic OCR is integrated and validated.
+                        bitmap.recycle()
+                        broadcastResult("⚠️ النسخة الأولية: قراءة العربية غير مفعّلة بعد. لا تعتمد على النتيجة.")
+                    }
+                } finally {
+                    buffer.close()
                 }
-                // OCR parsing intentionally fails closed until Arabic OCR is integrated and validated.
-                bitmap.recycle()
-                broadcastResult("⚠️ النسخة الأولية: قراءة العربية غير مفعّلة بعد. لا تعتمد على النتيجة.")
             }
+
             override fun onFailure(errorCode: Int) {
-                broadcastResult("تعذّر التقاط الشاشة. تأكد من تفعيل خدمة إمكانية الوصول.")
+                val message = if (errorCode == AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
+                    "انتظر ثانية ثم اضغط مرة أخرى."
+                } else {
+                    "تعذّر التقاط الشاشة. تأكد من تفعيل خدمة إمكانية الوصول."
+                }
+                broadcastResult(message)
             }
         })
     }
 
     private fun broadcastResult(message: String) {
-        sendBroadcast(Intent("com.athar.gameassistant.RESULT").setPackage(packageName).putExtra("message", message))
+        sendBroadcast(
+            Intent(ACTION_RESULT).setPackage(packageName).putExtra(EXTRA_MESSAGE, message)
+        )
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
+
     override fun onDestroy() {
-        try { unregisterReceiver(receiver) } catch (_: Exception) {}
+        isRunning = false
+        if (receiverRegistered) {
+            try { unregisterReceiver(receiver) } catch (_: Exception) {}
+            receiverRegistered = false
+        }
         super.onDestroy()
     }
 }

@@ -20,8 +20,10 @@ This is a starter prototype, not a verified game-playing assistant yet. Arabic O
 6. Open the app and follow its instructions to enable overlay and accessibility permissions.
 
 ## Local build
-Requires JDK 17 and Android SDK:
-`./gradlew assembleDebug`
+Requires JDK 17, the Android SDK and Gradle 8.9 (the Android Gradle Plugin 8.7.x needs Gradle 8.9+):
+`gradle assembleDebug`
+
+The Gradle wrapper is not included. To add it once: `gradle wrapper --gradle-version 8.9`, then use `./gradlew assembleDebug`.
 
 ## Permissions
 The overlay permission and Accessibility Service must be explicitly enabled by the user in Android Settings. Accessibility is used only to request a screenshot when you tap the review button; no automatic accept/reject clicks are performed.
