@@ -101,7 +101,13 @@ class ScreenReaderService : AccessibilityService() {
     private fun analyze(): Report {
         val root = findRoot()
             ?: return Report(emptyList(), null, "مش قادر أوصل لشاشة اللعبة. افتح اللعبة في المتصفح.")
-        val tokens = collectTokens(root)
+        var tokens = collectTokens(root)
+        if (tokens.isEmpty()) {
+            // Browsers build the page's accessibility tree lazily on the first request: wait and retry once.
+            Thread.sleep(900)
+            val again = findRoot()
+            if (again != null) tokens = collectTokens(again)
+        }
         if (tokens.isEmpty()) {
             return Report(
                 emptyList(), null,
@@ -150,6 +156,26 @@ class ScreenReaderService : AccessibilityService() {
         }
     }
 
+    private fun dumpStructure(node: AccessibilityNodeInfo, sb: StringBuilder, depth: Int, counter: IntArray) {
+        if (counter[0] >= 400 || depth > 60) return
+        counter[0]++
+        val indent = "  ".repeat(minOf(depth, 30))
+        sb.append(indent).append(node.className).append(" c=").append(node.childCount)
+        val t = node.text?.toString()
+        val d = node.contentDescription?.toString()
+        if (!t.isNullOrEmpty()) sb.append(" text=").append(t.take(40).replace('\n', ' '))
+        if (!d.isNullOrEmpty()) sb.append(" desc=").append(d.take(40).replace('\n', ' '))
+        sb.append('\n')
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i)
+            if (child == null) {
+                sb.append(indent).append("  (null child)\n")
+            } else {
+                dumpStructure(child, sb, depth + 1, counter)
+            }
+        }
+    }
+
     /** Copies everything the service can read (plus what it parsed) to the clipboard. */
     private fun dump() {
         if (worker.isShutdown) return
@@ -161,7 +187,12 @@ class ScreenReaderService : AccessibilityService() {
                     sb.append("NO ROOT\n")
                 } else {
                     sb.append("pkg=").append(root.packageName).append(" cls=").append(root.className).append('\n')
-                    val tokens = collectTokens(root)
+                    var tokens = collectTokens(root)
+                    if (tokens.isEmpty()) {
+                        Thread.sleep(900)
+                        val again = findRoot()
+                        if (again != null) tokens = collectTokens(again)
+                    }
                     sb.append("tokens=").append(tokens.size).append('\n')
                     for ((i, t) in tokens.withIndex()) {
                         if (i >= 700) {
@@ -177,6 +208,18 @@ class ScreenReaderService : AccessibilityService() {
                         if (h != null) sb.append("   <== HEADER ").append(h.name)
                         sb.append('\n')
                     }
+                    sb.append("--- windows ---\n")
+                    for (w in windows) {
+                        sb.append("type=").append(w.type)
+                            .append(" layer=").append(w.layer)
+                            .append(" active=").append(w.isActive)
+                            .append(" title=").append(w.title)
+                            .append(" pkg=").append(w.root?.packageName)
+                            .append('\n')
+                    }
+                    sb.append("--- structure (first 400 nodes, including nodes with no text) ---\n")
+                    val again2 = findRoot()
+                    if (again2 != null) dumpStructure(again2, sb, 0, intArrayOf(0))
                     sb.append("--- parsed ---\n")
                     for ((type, f) in DocParser.parse(tokens)) {
                         sb.append(type.name)
