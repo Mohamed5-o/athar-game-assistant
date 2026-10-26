@@ -66,8 +66,10 @@ class ScreenReaderService : AccessibilityService() {
 
     // worker-thread only
     private var lastSig: String? = null
-    private var lastKey = 0L
-    private var hasKey = false
+    private var analyzedKey = 0L
+    private var hasAnalyzed = false
+    private var pendingKey = 0L
+    private var hasPending = false
 
     private val loop = object : Runnable {
         override fun run() {
@@ -157,24 +159,32 @@ class ScreenReaderService : AccessibilityService() {
             bmp.getPixels(px, 0, w, 0, 0, w, h)
             val lay = VisionAnalyzer.detect(px, w, h)
             if (lay == null) {
+                hasAnalyzed = false
+                hasPending = false
                 emit(Report.note("مش لاقي ملفات الموظف (البطاقة وملف الشركة وإثبات السكن) على الشاشة."), force)
                 if (dump) saveDebug(bmp, null, emptyList(), "no layout")
                 return
             }
             val blocked = overlayRect
             val key = lay.contentHash() * 31L + (blocked?.contentHashCode() ?: 0)
-            if (!force && hasKey && key == lastKey) return
-            hasKey = true
-            lastKey = key
+            if (!force) {
+                if (hasAnalyzed && key == analyzedKey) return
+                if (!hasPending || key != pendingKey) {
+                    // new / still-changing documents: wait until the screen is stable (two identical captures)
+                    pendingKey = key
+                    hasPending = true
+                    emit(Report.note("⏳ جارٍ الفحص…"), false)
+                    return
+                }
+            }
+            analyzedKey = key
+            hasAnalyzed = true
+            pendingKey = key
+            hasPending = true
 
             val items = ArrayList<CheckItem>()
             items.add(VisionAnalyzer.nameCheck(lay, blocked))
-            items.add(
-                CheckItem(
-                    "العنوان", Status.NA,
-                    listOf("ظاهر في إثبات السكن بس — مفيش ملف تاني فيه عنوان يتقارن بيه.")
-                )
-            )
+            items.add(VisionAnalyzer.govCheck(lay, blocked))
             val ocrLog = StringBuilder()
             val (dobItem, ageItem) = dobAndAge(lay, blocked, ocrLog)
             items.add(dobItem)
@@ -198,13 +208,30 @@ class ScreenReaderService : AccessibilityService() {
     private fun parseDob(text: String?): Dob {
         val t = (text ?: "").replace('\n', ' ')
         val m = dateRe.find(t) ?: return Dob(null, null, t)
-        val date = "${m.groupValues[1].toInt()}-${m.groupValues[2].toInt()}-${m.groupValues[3].toInt()}"
-        val rest = t.substring(m.range.last + 1)
-        val age = numRe.find(rest)?.value?.toIntOrNull()
-        return Dob(date, age, t)
+        val y = m.groupValues[1].toInt()
+        val mo = m.groupValues[2].toInt()
+        val d = m.groupValues[3].toInt()
+        val valid = y in 1900..2100 && mo in 1..12 && d in 1..31
+        // the small age number sits next to the date, before or after it depending on the text order
+        val before = t.substring(0, m.range.first)
+        val after = t.substring(m.range.last + 1)
+        val age = numRe.findAll(before).lastOrNull()?.value?.toIntOrNull()
+            ?: numRe.find(after)?.value?.toIntOrNull()
+        return Dob(if (valid) "$y-$mo-$d" else null, age, t)
     }
 
-    private fun ocr(lay: Layout, row: Row): String? {
+    /** Two reads at different zoom levels must agree, otherwise the value is treated as unreadable. */
+    private fun readDob(lay: Layout, row: Row): Dob {
+        val a = parseDob(ocr(lay, row, 4))
+        val b = parseDob(ocr(lay, row, 6))
+        return Dob(
+            if (a.date == b.date) a.date else null,
+            if (a.age == b.age) a.age else null,
+            a.raw.trim() + " | " + b.raw.trim()
+        )
+    }
+
+    private fun ocr(lay: Layout, row: Row, scale: Int): String? {
         val pad = 4
         val x0 = max(0, row.x0 - pad)
         val x1 = min(lay.w, row.x1 + pad)
@@ -222,7 +249,7 @@ class ScreenReaderService : AccessibilityService() {
             }
         }
         val small = Bitmap.createBitmap(pix, w, h, Bitmap.Config.ARGB_8888)
-        val big = Bitmap.createScaledBitmap(small, w * 4, h * 4, true)
+        val big = Bitmap.createScaledBitmap(small, w * scale, h * scale, true)
         return try {
             Tasks.await(recognizer.process(InputImage.fromBitmap(big, 0)), 5, TimeUnit.SECONDS).text
         } catch (e: Exception) {
@@ -244,8 +271,8 @@ class ScreenReaderService : AccessibilityService() {
             val m = listOf("المربع العائم فوق الملف — حرّكه بعيد عن الملفات")
             return CheckItem("تاريخ الميلاد", Status.UNKNOWN, m) to CheckItem("العمر", Status.UNKNOWN, m)
         }
-        val card = parseDob(ocr(lay, cr))
-        val comp = parseDob(ocr(lay, kr))
+        val card = readDob(lay, cr)
+        val comp = readDob(lay, kr)
         log.append("OCR card: ").append(card.raw).append('\n')
         log.append("OCR company: ").append(comp.raw).append('\n')
 

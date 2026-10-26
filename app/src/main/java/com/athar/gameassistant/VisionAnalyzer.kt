@@ -4,6 +4,8 @@ import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /** A line of dark text inside a document (pixel rectangle in the screenshot). */
 class Row(val y0: Int, val y1: Int, val x0: Int, val x1: Int)
@@ -49,7 +51,7 @@ object VisionAnalyzer {
     const val DARK = 90
 
     /** Eroded-difference pixels (at 4x) above which two renderings of one text are different. */
-    const val THRESHOLD = 30
+    const val THRESHOLD = 25
 
     private val COL_CARD = intArrayOf(31, 90, 73)
     private val COL_RES = intArrayOf(62, 92, 118)
@@ -392,6 +394,143 @@ object VisionAnalyzer {
         val sc = blobDiff(crop(l.lum, l.w, c.y0, c.y1, c.x0, c.x1), crop(l.lum, l.w, k.y0, k.y1, k.x0, k.x1))
         return if (sc > THRESHOLD) CheckItem("الجنس", Status.BAD, listOf(pairLine("البطاقة", "الشركة", sc)))
         else CheckItem("الجنس", Status.OK)
+    }
+
+
+    // ---------------------------------------------------------------- governorate
+
+    private fun cropClamped(l: Layout, y0: Int, y1: Int, x0: Int, x1: Int): Ink {
+        val ya = max(0, y0)
+        val yb = min(l.h, y1)
+        val xa = max(0, x0)
+        val xb = min(l.w, x1)
+        if (yb <= ya || xb <= xa) return Ink(FloatArray(0), 0, 0)
+        return crop(l.lum, l.w, ya, yb, xa, xb)
+    }
+
+    private fun sample(i: Ink, fy: Float, fx: Float): Float {
+        val y0 = floor(fy.toDouble()).toInt().coerceIn(0, i.h - 1)
+        val x0 = floor(fx.toDouble()).toInt().coerceIn(0, i.w - 1)
+        val y1 = min(y0 + 1, i.h - 1)
+        val x1 = min(x0 + 1, i.w - 1)
+        val wy = (fy - y0).coerceIn(0f, 1f)
+        val wx = (fx - x0).coerceIn(0f, 1f)
+        val top = i.a[y0 * i.w + x0] * (1 - wx) + i.a[y0 * i.w + x1] * wx
+        val bot = i.a[y1 * i.w + x0] * (1 - wx) + i.a[y1 * i.w + x1] * wx
+        return top * (1 - wy) + bot * wy
+    }
+
+    /** Resized copy (3x3 super-sampling, behaves like area averaging when shrinking). */
+    private fun scaled(i: Ink, s: Float): Ink {
+        val nw = max(1, (i.w * s).roundToInt())
+        val nh = max(1, (i.h * s).roundToInt())
+        val out = FloatArray(nw * nh)
+        val sx = i.w.toFloat() / nw
+        val sy = i.h.toFloat() / nh
+        for (y in 0 until nh) {
+            for (x in 0 until nw) {
+                var acc = 0f
+                for (jy in 0 until 3) {
+                    for (jx in 0 until 3) {
+                        val fy = (y + (jy + 0.5f) / 3f) * sy - 0.5f
+                        val fx = (x + (jx + 0.5f) / 3f) * sx - 0.5f
+                        acc += sample(i, fy, fx)
+                    }
+                }
+                out[y * nw + x] = acc / 9f
+            }
+        }
+        return Ink(out, nw, nh)
+    }
+
+    /** Best zero-mean normalised cross-correlation of [t] anywhere inside [r] (-1 if it does not fit). */
+    private fun bestNcc(t: Ink, r: Ink): Float {
+        if (t.w == 0 || t.h == 0 || t.h > r.h || t.w > r.w) return -1f
+        val n = t.w * t.h
+        var tm = 0f
+        for (v in t.a) tm += v
+        tm /= n
+        val tz = FloatArray(n)
+        var tn = 0f
+        for (i in 0 until n) {
+            tz[i] = t.a[i] - tm
+            tn += tz[i] * tz[i]
+        }
+        if (tn <= 1e-6f) return -1f
+        var best = -1f
+        for (oy in 0..(r.h - t.h)) {
+            for (ox in 0..(r.w - t.w)) {
+                var sum = 0f
+                var sumsq = 0f
+                var cross = 0f
+                for (y in 0 until t.h) {
+                    val ri = (oy + y) * r.w + ox
+                    val ti = y * t.w
+                    for (x in 0 until t.w) {
+                        val rv = r.a[ri + x]
+                        sum += rv
+                        sumsq += rv * rv
+                        cross += rv * tz[ti + x]
+                    }
+                }
+                val varR = sumsq - sum * sum / n
+                if (varR <= 1e-6f) continue
+                val ncc = cross / sqrt(tn * varR)
+                if (ncc > best) best = ncc
+            }
+        }
+        return best
+    }
+
+    private fun matchScales(t: Ink, r: Ink, from: Float, to: Float, step: Float): Float {
+        var best = -1f
+        var s = from
+        while (s <= to + 0.0001f) {
+            val ts = if (abs(s - 1f) < 1e-6f) t else scaled(t, s)
+            val v = bestNcc(ts, r)
+            if (v > best) best = v
+            s += step
+        }
+        return best
+    }
+
+    private const val GOV_OK = 0.85f
+    private const val GOV_BAD = 0.75f
+
+    /**
+     * Governorate: the card's and the company file's "place of birth" and the LAST word of the
+     * address in the residence proof. They use the same font, but the address is shrunk when it is
+     * long, so the card's word is searched (with a size search) at the left end of the address row.
+     */
+    fun govCheck(l: Layout, blocked: IntArray?): CheckItem {
+        val title = "المحافظة"
+        val c = l.card.rows.getOrNull(3)
+        val k = if (l.co.rows.isNotEmpty()) l.co.rows[l.co.rows.size - 1] else null
+        val r = l.res.rows.getOrNull(1)
+        if (c == null || k == null || r == null) {
+            return CheckItem(title, Status.UNKNOWN, listOf("مش لاقي سطر المحافظة"))
+        }
+        if (hidden(c, blocked) || hidden(k, blocked) || hidden(r, blocked)) {
+            return CheckItem(title, Status.UNKNOWN, listOf(BLOCKED_MSG))
+        }
+        val t = cropClamped(l, c.y0 - 3, c.y1 + 4, c.x0 - 1, c.x1 + 1)
+        if (t.w == 0) return CheckItem(title, Status.UNKNOWN, listOf("مش قادر أقرا المحافظة في البطاقة"))
+        val wC = c.x1 - c.x0
+        val regionCo = cropClamped(l, k.y0 - 6, k.y1 + 7, k.x0 - 5, k.x1 + 5)
+        val regionRes = cropClamped(l, r.y0 - 6, r.y1 + 6, r.x0 - 3, r.x0 + (wC * 1.2f).toInt() + 8)
+        val vCo = matchScales(t, regionCo, 0.96f, 1.04f, 0.02f)
+        val vRes = matchScales(t, regionRes, 0.78f, 1.12f, 0.02f)
+
+        fun pct(v: Float): Int = (max(v, 0f) * 100).toInt()
+        val bad = ArrayList<String>()
+        if (vCo < GOV_BAD) bad.add("البطاقة ≠ الشركة (تشابه ${pct(vCo)}%)")
+        if (vRes < GOV_BAD) bad.add("البطاقة ≠ السكن (تشابه ${pct(vRes)}%)")
+        if (bad.isNotEmpty()) return CheckItem(title, Status.BAD, bad)
+        if (vCo >= GOV_OK && vRes >= GOV_OK) return CheckItem(title, Status.OK)
+        return CheckItem(
+            title, Status.UNKNOWN,
+            listOf("مش متأكد من المحافظة (الشركة ${pct(vCo)}%، السكن ${pct(vRes)}%) — راجعها بنفسك")
+        )
     }
 
     /** Birth-date rows (need OCR): card row 2 and the company record's first row. */
