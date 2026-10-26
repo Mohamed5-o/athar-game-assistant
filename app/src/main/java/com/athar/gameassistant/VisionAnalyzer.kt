@@ -282,27 +282,29 @@ object VisionAnalyzer {
      */
     fun blobDiff(a: Ink, b: Ink): Int {
         if (abs(a.w - b.w) > 3 || abs(a.h - b.h) > 3) return 9999
-        val s = 4
         val hh = max(a.h, b.h) + 2
         val ww = max(a.w, b.w) + 2
-        val ua = upsample(padded(a, hh, ww), hh, ww, s)
-        val ub = upsample(padded(b, hh, ww), hh, ww, s)
+        val pa = padded(a, hh, ww)
+        val pb = padded(b, hh, ww)
+
+        val s = 4
+        val ua = upsample(pa, hh, ww, s)
+        val ub = upsample(pb, hh, ww, s)
         val uh = hh * s
         val uw = ww * s
         var bestSum = Float.MAX_VALUE
         var bestDy = 0
         var bestDx = 0
-        for (dy in -6..6) {
-            for (dx in -6..6) {
+        val sxs = IntArray(uw)
+        for (dx in -4..4) {
+            for (x in 0 until uw) sxs[x] = ((x - dx) % uw + uw) % uw
+            for (dy in -4..4) {
                 var sum = 0f
                 for (y in 0 until uh) {
                     val sy = ((y - dy) % uh + uh) % uh
                     val rowA = y * uw
                     val rowB = sy * uw
-                    for (x in 0 until uw) {
-                        val sx = ((x - dx) % uw + uw) % uw
-                        sum += abs(ua[rowA + x] - ub[rowB + sx])
-                    }
+                    for (x in 0 until uw) sum += abs(ua[rowA + x] - ub[rowB + sxs[x]])
                 }
                 if (sum < bestSum) {
                     bestSum = sum
@@ -342,6 +344,24 @@ object VisionAnalyzer {
     private fun hidden(r: Row, blocked: IntArray?): Boolean =
         blocked != null && r.x0 < blocked[2] + 2 && r.x1 > blocked[0] - 2 &&
             r.y0 < blocked[3] + 2 && r.y1 > blocked[1] - 2
+
+    /** All documents show the expected number of text rows (otherwise they are still appearing / moving). */
+    fun isComplete(l: Layout): Boolean =
+        l.card.rows.size in 5..7 && l.co.rows.size in 5..7 && l.res.rows.size >= 2
+
+    /** Which text rows are covered by the floating box (bit mask): independent of the box's exact size. */
+    fun blockedMask(l: Layout, blocked: IntArray?): Int {
+        if (blocked == null) return 0
+        var mask = 0
+        var bit = 0
+        for (p in listOf(l.card, l.res, l.co)) {
+            for (r in p.rows) {
+                if (bit < 30 && hidden(r, blocked)) mask = mask or (1 shl bit)
+                bit++
+            }
+        }
+        return mask
+    }
 
     private const val BLOCKED_MSG = "المربع العائم فوق الملف — حرّكه بعيد عن الملفات"
 
@@ -489,6 +509,7 @@ object VisionAnalyzer {
             val ts = if (abs(s - 1f) < 1e-6f) t else scaled(t, s)
             val v = bestNcc(ts, r)
             if (v > best) best = v
+            if (best >= 0.95f) break // clear match: no need to try the other sizes
             s += step
         }
         return best

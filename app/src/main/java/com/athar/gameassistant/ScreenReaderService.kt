@@ -32,7 +32,7 @@ import kotlin.math.min
  */
 class ScreenReaderService : AccessibilityService() {
     companion object {
-        private const val POLL_MS = 1500L
+        private const val POLL_MS = 1100L
 
         @Volatile
         var instance: ScreenReaderService? = null
@@ -68,8 +68,6 @@ class ScreenReaderService : AccessibilityService() {
     private var lastSig: String? = null
     private var analyzedKey = 0L
     private var hasAnalyzed = false
-    private var pendingKey = 0L
-    private var hasPending = false
 
     private val loop = object : Runnable {
         override fun run() {
@@ -83,6 +81,15 @@ class ScreenReaderService : AccessibilityService() {
         instance = this
         main.removeCallbacks(loop)
         main.postDelayed(loop, POLL_MS)
+        // load the text-recognition model now so the first real check is not slow
+        worker.execute {
+            try {
+                val blank = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+                Tasks.await(recognizer.process(InputImage.fromBitmap(blank, 0)), 15, TimeUnit.SECONDS)
+                blank.recycle()
+            } catch (_: Exception) {
+            }
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
@@ -160,27 +167,23 @@ class ScreenReaderService : AccessibilityService() {
             val lay = VisionAnalyzer.detect(px, w, h)
             if (lay == null) {
                 hasAnalyzed = false
-                hasPending = false
                 emit(Report.note("مش لاقي ملفات الموظف (البطاقة وملف الشركة وإثبات السكن) على الشاشة."), force)
                 if (dump) saveDebug(bmp, null, emptyList(), "no layout")
                 return
             }
             val blocked = overlayRect
-            val key = lay.contentHash() * 31L + (blocked?.contentHashCode() ?: 0)
-            if (!force) {
-                if (hasAnalyzed && key == analyzedKey) return
-                if (!hasPending || key != pendingKey) {
-                    // new / still-changing documents: wait until the screen is stable (two identical captures)
-                    pendingKey = key
-                    hasPending = true
-                    emit(Report.note("⏳ جارٍ الفحص…"), false)
-                    return
-                }
+            // the key must not depend on the size of the floating box, or every new result would re-trigger a check
+            val key = lay.contentHash() * 31L + VisionAnalyzer.blockedMask(lay, blocked)
+            if (!force && hasAnalyzed && key == analyzedKey) return
+            if (!force && !VisionAnalyzer.isComplete(lay)) {
+                // documents still appearing / moving
+                hasAnalyzed = false
+                emit(Report.note("⏳ جارٍ الفحص…"), false)
+                return
             }
+            if (!force) emit(Report.note("⏳ جارٍ الفحص…"), false)
             analyzedKey = key
             hasAnalyzed = true
-            pendingKey = key
-            hasPending = true
 
             val items = ArrayList<CheckItem>()
             items.add(VisionAnalyzer.nameCheck(lay, blocked))
@@ -221,15 +224,12 @@ class ScreenReaderService : AccessibilityService() {
     }
 
     /** Two reads at different zoom levels must agree, otherwise the value is treated as unreadable. */
-    private fun readDob(lay: Layout, row: Row): Dob {
-        val a = parseDob(ocr(lay, row, 4))
-        val b = parseDob(ocr(lay, row, 6))
-        return Dob(
+    private fun mergeDob(a: Dob, b: Dob): Dob =
+        Dob(
             if (a.date == b.date) a.date else null,
             if (a.age == b.age) a.age else null,
             a.raw.trim() + " | " + b.raw.trim()
         )
-    }
 
     private fun ocr(lay: Layout, row: Row, scale: Int): String? {
         val pad = 4
@@ -271,8 +271,17 @@ class ScreenReaderService : AccessibilityService() {
             val m = listOf("المربع العائم فوق الملف — حرّكه بعيد عن الملفات")
             return CheckItem("تاريخ الميلاد", Status.UNKNOWN, m) to CheckItem("العمر", Status.UNKNOWN, m)
         }
-        val card = readDob(lay, cr)
-        val comp = readDob(lay, kr)
+        var card = parseDob(ocr(lay, cr, 4))
+        var comp = parseDob(ocr(lay, kr, 4))
+        // one clean read is enough when both dates agree and the age is not near the 18 / 65 limits;
+        // otherwise read again at another zoom level and require both reads to agree
+        val agree = card.date != null && card.date == comp.date
+        val age1 = card.age
+        val nearEdge = age1 == null || age1 in 14..21 || age1 in 62..69
+        if (!agree || nearEdge) {
+            card = mergeDob(card, parseDob(ocr(lay, cr, 6)))
+            comp = mergeDob(comp, parseDob(ocr(lay, kr, 6)))
+        }
         log.append("OCR card: ").append(card.raw).append('\n')
         log.append("OCR company: ").append(comp.raw).append('\n')
 
